@@ -73,6 +73,26 @@ The classifier is a regex + prompt-length heuristic. It is **evaluated**, and th
 
 `npm run eval` prints per-tier precision/recall, a confusion matrix, and every misroute, and fails below `MIN_ACCURACY` (default 0.70) so CI catches regressions. **The heuristic is a baseline, not the finished classifier** — see the eval output for exactly where it fails.
 
+## HTTP API (Vercel)
+
+`api/classify.ts` is a Vercel Function that returns the routing decision for a prompt. It is **pure classification — no model call — so it costs nothing** and is safe to expose. Live generation is intentionally **not** exposed publicly.
+
+```bash
+curl -s https://<your-deployment>/api/classify \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Write a SQL query for top customers"}'
+# -> {"tier":"coding","provider":"gateway","model":"anthropic/claude-sonnet-4"}
+```
+
+Body/query: `prompt` (required), `hasImages`, `forceTier`, `fastProvider`.
+
+Deploy:
+
+```bash
+vercel login      # one-time, interactive
+vercel --prod     # deploys; set AI_GATEWAY_API_KEY / OPENROUTER_API_KEY in project env if you later add generation
+```
+
 ## License
 
 MIT
