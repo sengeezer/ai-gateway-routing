@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "eval": "tsx eval/run-eval.ts",
+    "eval:compare": "tsx eval/compare.ts",
     "check": "npm run typecheck && npm run test && npm run eval"
   },
   "dependencies": {

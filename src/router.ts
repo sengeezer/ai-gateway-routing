@@ -14,6 +14,7 @@
 import { generateText } from 'ai';
 import { gateway } from '@ai-sdk/gateway';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { classifySemantic } from './semantic-classifier';
 
 /** Lazily construct the OpenRouter provider so the API key is read at call time,
  *  not at module load (ESM import hoisting would otherwise beat dotenv setup). */
@@ -115,8 +116,39 @@ export function classify(input: RouteInput): TaskTier {
  *  fast -> OpenRouter Auto Router OR the gateway (per the FAST_TIER toggle);
  *  all other tiers -> Vercel AI Gateway. */
 export function modelForInput(input: RouteInput) {
-  const tier = classify(input);
+  return buildRoute(classify(input), input);
+}
 
+/** How the tier is decided. 'auto' = semantic when an embeddings key is present, else regex. */
+export type ClassifierMode = 'regex' | 'semantic' | 'auto';
+
+function classifierMode(): ClassifierMode {
+  const v = process.env.CLASSIFIER?.trim().toLowerCase();
+  return v === 'regex' || v === 'semantic' || v === 'auto' ? v : 'auto';
+}
+
+/**
+ * Async classification honoring CLASSIFIER (default 'auto').
+ * Uses the embeddings classifier when selected/available, and transparently
+ * falls back to the regex classifier if embeddings error out (no key, network, etc.).
+ */
+export async function classifyAsync(
+  input: RouteInput,
+): Promise<{ tier: TaskTier; method: 'regex' | 'semantic' }> {
+  const mode = classifierMode();
+  const useSemantic = mode === 'semantic' || (mode === 'auto' && !!process.env.AI_GATEWAY_API_KEY);
+  if (useSemantic) {
+    try {
+      return { tier: await classifySemantic(input), method: 'semantic' };
+    } catch {
+      // fall through to the resilient regex path
+    }
+  }
+  return { tier: classify(input), method: 'regex' };
+}
+
+/** Build the model + provider options for an already-decided tier. */
+function buildRoute(tier: TaskTier, input: RouteInput) {
   if (tier === 'fast' && fastTierProvider(input.fastProvider) === 'openrouter') {
     return {
       tier,
@@ -142,9 +174,16 @@ export function modelForInput(input: RouteInput) {
   };
 }
 
-/** End-to-end: classify -> route -> generate. Sends images as a multimodal message when present. */
+/** Resolve using the configured classifier (semantic by default; see CLASSIFIER env). */
+export async function modelForInputAsync(input: RouteInput) {
+  const { tier, method } = await classifyAsync(input);
+  return { ...buildRoute(tier, input), method };
+}
+
+/** End-to-end: classify -> route -> generate. Sends images as a multimodal message when present.
+ *  Uses the configured classifier (semantic by default) with regex fallback. */
 export async function routedGenerate(input: RouteInput) {
-  const { tier, provider, model, providerOptions } = modelForInput(input);
+  const { tier, provider, method, model, providerOptions } = await modelForInputAsync(input);
   const images = input.images ?? [];
   const res = await generateText({
     model,
@@ -163,5 +202,5 @@ export async function routedGenerate(input: RouteInput) {
         }
       : { prompt: input.prompt }),
   });
-  return { tier, provider, text: res.text, usage: res.usage };
+  return { tier, provider, method, text: res.text, usage: res.usage };
 }

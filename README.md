@@ -71,7 +71,20 @@ The classifier is a regex + prompt-length heuristic. It is **evaluated**, and th
 - **Adversarial subset: ~14%** — prose containing code/reasoning keywords, or reasoning/coding asks phrased in plain English, get mis-routed.
 - **Vision: 100%** (image presence is an unambiguous signal).
 
-`npm run eval` prints per-tier precision/recall, a confusion matrix, and every misroute, and fails below `MIN_ACCURACY` (default 0.70) so CI catches regressions. **The heuristic is a baseline, not the finished classifier** — see the eval output for exactly where it fails.
+`npm run eval` prints per-tier precision/recall, a confusion matrix, and every misroute, and fails below `MIN_ACCURACY` (default 0.70) so CI catches regressions.
+
+### Embeddings classifier (default)
+
+There is **no mature TypeScript drop-in** for semantic routing (the `semantic-router` npm name is an empty placeholder; the real Aurelio Labs library is Python-only). So `src/semantic-classifier.ts` implements the same technique natively: embed a few reference utterances per tier (via the gateway's embedding models + the `ai` SDK's `embedMany`), then classify by max cosine similarity. Vision stays a hard rule (image presence).
+
+Measured head-to-head on the labeled set (`npm run eval:compare`):
+
+| subset | regex | **embeddings** |
+|---|---|---|
+| overall | 73.3% | **96.7%** |
+| adversarial | 12.5% | **100%** |
+
+`routedGenerate` uses the embeddings classifier by default and **falls back to regex** if embeddings error (no key / network). Control it with `CLASSIFIER=semantic\|regex\|auto` (default `auto` = semantic when `AI_GATEWAY_API_KEY` is present) and `EMBED_MODEL` (default `openai/text-embedding-3-small`). The regex path stays free/instant/offline and remains the CI gate.
 
 ## HTTP API (Vercel)
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   classify,
+  classifyAsync,
   fastTierProvider,
   modelForInput,
   setFastTierProvider,
@@ -106,5 +107,35 @@ describe('modelForInput provider selection', () => {
     const r = modelForInput({ prompt: 'what is this?', hasImages: true });
     expect(r.tier).toBe('vision');
     expect(r.provider).toBe('gateway');
+  });
+});
+
+describe('classifyAsync (offline paths)', () => {
+  const origKey = process.env.AI_GATEWAY_API_KEY;
+  afterEach(() => {
+    delete process.env.CLASSIFIER;
+    if (origKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+    else process.env.AI_GATEWAY_API_KEY = origKey;
+  });
+
+  it('CLASSIFIER=regex forces the regex method (no network)', async () => {
+    process.env.CLASSIFIER = 'regex';
+    const r = await classifyAsync({ prompt: '```py\nx=1\n```' });
+    expect(r.method).toBe('regex');
+    expect(r.tier).toBe('coding');
+  });
+
+  it("auto mode without an embeddings key falls back to regex", async () => {
+    process.env.CLASSIFIER = 'auto';
+    delete process.env.AI_GATEWAY_API_KEY;
+    const r = await classifyAsync({ prompt: 'Capital of France?' });
+    expect(r.method).toBe('regex');
+    expect(r.tier).toBe('fast');
+  });
+
+  it('honors forceTier regardless of method', async () => {
+    process.env.CLASSIFIER = 'regex';
+    const r = await classifyAsync({ prompt: 'x', forceTier: 'vision' });
+    expect(r.tier).toBe('vision');
   });
 });
