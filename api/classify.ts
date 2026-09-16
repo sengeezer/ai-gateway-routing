@@ -1,27 +1,39 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { modelForInput, TIER_MODELS, type RouteInput, type FastTierProvider } from '../src/router';
 
 /**
- * POST /api/classify  (also GET /api/classify?prompt=...)
+ * GET/POST /api/classify  — Vercel Function (Web handler; no @vercel/node dependency).
  *
  * Pure classification — NO model call, so it costs nothing and is safe to expose.
- * Returns the tier the request would route to, the backend provider, and the
- * concrete model (for gateway tiers) or 'openrouter/auto' (for the OpenRouter fast tier).
+ * Uses the synchronous regex classifier (free/offline). Returns the tier the request
+ * would route to, the backend provider, and the concrete model (or 'openrouter/auto').
  *
- * Body / query:
+ * Body (POST JSON) or query (GET):
  *   prompt       string (required)
- *   hasImages    boolean (optional)  — force the vision signal
+ *   hasImages    boolean|'true' (optional)
  *   forceTier    'fast'|'reasoning'|'vision'|'coding' (optional)
- *   fastProvider 'openrouter'|'gateway' (optional) — override the fast-tier backend
+ *   fastProvider 'openrouter'|'gateway' (optional)
  */
-export default function handler(req: VercelRequest, res: VercelResponse) {
-  const src = req.method === 'GET' ? req.query : (req.body ?? {});
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+export default async function handler(request: Request): Promise<Response> {
+  let src: Record<string, unknown> = {};
+  if (request.method === 'GET') {
+    src = Object.fromEntries(new URL(request.url).searchParams.entries());
+  } else {
+    try {
+      src = (await request.json()) as Record<string, unknown>;
+    } catch {
+      src = {};
+    }
+  }
 
   const prompt = typeof src.prompt === 'string' ? src.prompt : undefined;
-  if (!prompt) {
-    res.status(400).json({ error: "missing 'prompt'" });
-    return;
-  }
+  if (!prompt) return json({ error: "missing 'prompt'" }, 400);
 
   const input: RouteInput = {
     prompt,
@@ -35,6 +47,5 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
 
   const { tier, provider } = modelForInput(input);
   const model = provider === 'openrouter' ? 'openrouter/auto' : TIER_MODELS[tier];
-
-  res.status(200).json({ tier, provider, model });
+  return json({ tier, provider, model });
 }
