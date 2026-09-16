@@ -16,6 +16,7 @@ import { gateway } from '@ai-sdk/gateway';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { classifySemantic } from './semantic-classifier';
+import { estimateCost, formatCost, type CostEstimate } from './cost-estimator';
 
 /** Lazily construct the OpenRouter provider so the API key is read at call time,
  *  not at module load (ESM import hoisting would otherwise beat dotenv setup). */
@@ -115,6 +116,15 @@ export interface RouteInput {
   fastProvider?: FastTierProvider;
 }
 
+export interface GenerateOutput {
+  tier: TaskTier;
+  provider: 'gateway' | 'openrouter' | 'local';
+  method: 'semantic' | 'regex';
+  text: string;
+  usage: any; // LanguageModelV2Usage
+  cost: CostEstimate;
+}
+
 const CODE_RE = /```|\b(function|def|class|import|const|SELECT|=>|public\s+static)\b/;
 const REASON_RE =
   /\b(prove|analy[sz]e|reason|derive|step[- ]by[- ]step|explain why|trade[- ]?offs?|architect|strategy)\b/i;
@@ -211,7 +221,7 @@ export async function modelForInputAsync(input: RouteInput) {
 
 /** End-to-end: classify -> route -> generate. Sends images as a multimodal message when present.
  *  Uses the configured classifier (semantic by default) with regex fallback. */
-export async function routedGenerate(input: RouteInput) {
+export async function routedGenerate(input: RouteInput): Promise<GenerateOutput> {
   const { tier, provider, method, model, providerOptions } = await modelForInputAsync(input);
   const images = input.images ?? [];
   const res = await generateText({
@@ -231,5 +241,17 @@ export async function routedGenerate(input: RouteInput) {
         }
       : { prompt: input.prompt }),
   });
-  return { tier, provider, method, text: res.text, usage: res.usage };
+
+  // Estimate and log cost
+  const cost = estimateCost(
+    model.modelId,
+    provider,
+    res.usage.inputTokens ?? 0,
+    res.usage.outputTokens ?? 0,
+  );
+  console.log(
+    `[${tier}/${provider}] ${model.modelId} — ${res.usage.inputTokens}+${res.usage.outputTokens} tokens, cost ${formatCost(cost)}`,
+  );
+
+  return { tier, provider, method, text: res.text, usage: res.usage, cost };
 }
