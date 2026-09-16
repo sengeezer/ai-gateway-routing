@@ -22,3 +22,26 @@ jobs:
         run: npm run test
       - name: Classifier eval (accuracy gate)
         run: npm run eval
+
+  # Semantic (embeddings) accuracy gate. Push-only: repo secrets are NOT exposed to
+  # pull_request runs from forks, so this would fail there. Skips cleanly if the
+  # secret is absent.
+  semantic-eval:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Semantic classifier eval (accuracy gate)
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+        run: |
+          if [ -z "$AI_GATEWAY_API_KEY" ]; then
+            echo "AI_GATEWAY_API_KEY not set — skipping semantic eval."
+            exit 0
+          fi
+          npm run eval:semantic
