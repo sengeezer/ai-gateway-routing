@@ -40,8 +40,10 @@ Precedence, highest first:
 
 1. per-call: `routedGenerate({ prompt, fastProvider: 'gateway' })`
 2. programmatic: `setFastTierProvider('gateway')`
-3. environment: `FAST_TIER_PROVIDER=gateway|openrouter`
+3. environment: `FAST_TIER_PROVIDER=gateway|openrouter|local`
 4. built-in default: `openrouter`
+
+`local` routes the fast tier to a local OpenAI-compatible server (e.g. **Qwen via llama.cpp**) — free and private, ideal for cutting credit spend on simple requests. Configure `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_API_KEY`, `LOCAL_LLM_MODEL`.
 
 ### Credit warnings (not caps)
 

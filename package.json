@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "^1.0.0",
+    "@ai-sdk/openai-compatible": "^1.0.54",
     "@openrouter/ai-sdk-provider": "^1.5.4",
     "ai": "^5.0.0",
     "dotenv": "^17.4.2"

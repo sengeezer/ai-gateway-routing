@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   classify,
   classifyAsync,
@@ -40,6 +40,10 @@ describe('classify', () => {
 });
 
 describe('fast-tier toggle precedence', () => {
+  beforeEach(() => {
+    setFastTierProvider(null);
+    delete process.env.FAST_TIER_PROVIDER;
+  });
   afterEach(() => {
     setFastTierProvider(null);
     delete process.env.FAST_TIER_PROVIDER;
@@ -64,6 +68,14 @@ describe('fast-tier toggle precedence', () => {
     process.env.FAST_TIER_PROVIDER = 'gateway';
     setFastTierProvider('gateway');
     expect(fastTierProvider('openrouter')).toBe('openrouter');
+  });
+
+  it('supports the local provider via env and setter', () => {
+    process.env.FAST_TIER_PROVIDER = 'local';
+    expect(fastTierProvider()).toBe('local');
+    setFastTierProvider('openrouter');
+    expect(fastTierProvider()).toBe('openrouter');
+    expect(fastTierProvider('local')).toBe('local');
   });
 
   it('ignores an invalid env value', () => {
