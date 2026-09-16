@@ -28,8 +28,14 @@ Unlike OpenRouter's `openrouter/auto`, the Vercel gateway is a **provider/reliab
 - **Embeddings (measured):** 100% overall (30/30), 100% adversarial. Uses gateway embeddings API + cosine similarity.
 - **Fallback:** If embeddings fail (no key/network), uses regex silently. Result includes `method` field for transparency.
 
-### 3. Local inference cuts costs dramatically
-Qwen3.6-35B (262k context, vision-capable) runs free on local llama.cpp. **Fast tier can route to local Qwen**, eliminating credits for simple requests. Configured via `FAST_TIER_PROVIDER=local` + `LOCAL_LLM_BASE_URL`/`LOCAL_LLM_API_KEY`/`LOCAL_LLM_MODEL`.
+### 3. Cheap/free hosted models cut costs — no local compute
+Set `TIER_PROFILE=budget` to route every gateway tier to cheap/free models hosted **on the gateway** (nothing runs on your machine). All IDs verified live. Prices $/1M in·out:
+- fast → `amazon/nova-micro` ($0.035/$0.14)
+- reasoning → `alibaba/qwen3.7-flash` (hosted Qwen, thinking, 991k ctx — $0.03/$0.13, ~100x cheaper than opus)
+- vision → `alibaba/qwen3.7-flash` (hosted Qwen vision — $0.03/$0.13, ~100x cheaper than gpt-4o)
+- coding → `alibaba/qwen3-coder-30b-a3b` ($0.15/$0.60, ~20x cheaper than sonnet)
+
+Budget fallbacks include FREE models (vision → `inclusionai/ling-3.0-flash-vl-free`, $0). Default profile stays `quality` (premium models) — quality-first. The on-device `FAST_TIER_PROVIDER=local` path still exists but is **legacy** (user's machine is too slow for local inference); prefer the hosted budget profile.
 
 ### 4. Spend data is limited
 Vercel's detailed spend reports (per-model breakdown) require a paid plan (403/"requires a paid plan"). The `/v1/credits` endpoint gives real-time balance/used but no attribution. **Mitigate:** capture token usage + estimated cost per call, instrument the code.
