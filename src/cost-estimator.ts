@@ -20,6 +20,15 @@ const PRICING: Record<string, { inputPrice: number; outputPrice: number }> = {
   'google/gemini-2.5-flash': { inputPrice: 0.075, outputPrice: 0.3 },
   'google/gemini-2.5-flash-lite': { inputPrice: 0.075, outputPrice: 0.3 },
 
+  // Budget / cheap hosted models (verified 2026-09, $/1M tokens)
+  'amazon/nova-micro': { inputPrice: 0.035, outputPrice: 0.14 },
+  'alibaba/qwen3.7-flash': { inputPrice: 0.03, outputPrice: 0.13 },
+  'alibaba/qwen3-coder-30b-a3b': { inputPrice: 0.15, outputPrice: 0.6 },
+  'deepseek/deepseek-v4-flash-0731': { inputPrice: 0.076, outputPrice: 0.153 },
+  'inclusionai/ling-3.0-flash': { inputPrice: 0.021, outputPrice: 0.063 },
+  'inclusionai/ling-3.0-flash-vl-free': { inputPrice: 0, outputPrice: 0 },
+  'poolside/laguna-s-2.1-free': { inputPrice: 0, outputPrice: 0 },
+
   // OpenRouter
   'openrouter/auto': { inputPrice: 2, outputPrice: 6 }, // conservative estimate
 };

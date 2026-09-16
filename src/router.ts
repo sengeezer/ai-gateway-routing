@@ -100,6 +100,43 @@ export const TIER_FALLBACKS: Record<TaskTier, string[]> = {
   coding: ['openai/gpt-4o'],
 };
 
+/**
+ * Tier profile selects which model map to use:
+ *   - 'quality' (default): the premium models above (quality-first).
+ *   - 'budget': cheap/free models hosted ON the gateway (Qwen-centric) — zero local
+ *     compute, so nothing runs on your machine. Flip with `TIER_PROFILE=budget`.
+ * All budget IDs are verified live on the gateway. Prices are $/1M tokens (in/out),
+ * as of 2026-09; compare to quality (e.g. reasoning opus $3/$15, vision gpt-4o $5/$15).
+ */
+export type TierProfile = 'quality' | 'budget';
+
+export function tierProfile(): TierProfile {
+  return process.env.TIER_PROFILE?.trim().toLowerCase() === 'budget' ? 'budget' : 'quality';
+}
+
+/** Cheap/free hosted models (verified live). Qwen-centric; no machine load. */
+export const BUDGET_TIER_MODELS: Record<TaskTier, string> = {
+  fast: 'amazon/nova-micro', //            $0.035/$0.14 — concise, fast (non-thinking)
+  reasoning: 'alibaba/qwen3.7-flash', //   $0.03/$0.13  — hosted Qwen (thinking), 991k ctx
+  vision: 'alibaba/qwen3.7-flash', //      $0.03/$0.13  — hosted Qwen vision, 991k ctx
+  coding: 'alibaba/qwen3-coder-30b-a3b', //$0.15/$0.60  — Qwen coder, 262k ctx
+};
+
+export const BUDGET_TIER_FALLBACKS: Record<TaskTier, string[]> = {
+  fast: ['google/gemini-2.5-flash-lite', 'inclusionai/ling-3.0-flash'],
+  reasoning: ['deepseek/deepseek-v4-flash-0731', 'google/gemini-2.5-flash'],
+  vision: ['inclusionai/ling-3.0-flash-vl-free', 'google/gemini-2.5-flash'], // free vision fallback
+  coding: ['deepseek/deepseek-v4-flash-0731', 'openai/gpt-4o-mini'],
+};
+
+/** The model map / fallback chain for the active TIER_PROFILE. */
+export function activeTierModels(): Record<TaskTier, string> {
+  return tierProfile() === 'budget' ? BUDGET_TIER_MODELS : TIER_MODELS;
+}
+export function activeTierFallbacks(): Record<TaskTier, string[]> {
+  return tierProfile() === 'budget' ? BUDGET_TIER_FALLBACKS : TIER_FALLBACKS;
+}
+
 export interface RouteInput {
   prompt: string;
   /**
@@ -203,11 +240,11 @@ function buildRoute(tier: TaskTier, input: RouteInput) {
   return {
     tier,
     provider: 'gateway' as const,
-    model: gateway(TIER_MODELS[tier]),
+    model: gateway(activeTierModels()[tier]),
     providerOptions: {
       gateway: {
         // Automatic model-level fallback if the primary is unavailable.
-        models: TIER_FALLBACKS[tier],
+        models: activeTierFallbacks()[tier],
       },
     },
   };

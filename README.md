@@ -43,7 +43,27 @@ Precedence, highest first:
 3. environment: `FAST_TIER_PROVIDER=gateway|openrouter|local`
 4. built-in default: `openrouter`
 
-`local` routes the fast tier to a local OpenAI-compatible server (e.g. **Qwen via llama.cpp**) — free and private, ideal for cutting credit spend on simple requests. Configure `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_API_KEY`, `LOCAL_LLM_MODEL`.
+`local` routes the fast tier to a local OpenAI-compatible server (e.g. **Qwen via llama.cpp**) — free and private, but it runs on your machine. For a hosted, zero-machine-load alternative use the **budget profile** below.
+
+### Tier profiles: `quality` (default) vs `budget`
+
+Set `TIER_PROFILE=budget` to route **every gateway tier to cheap/free models hosted on the gateway** — no local compute, nothing runs on your machine. `quality` (default) keeps the premium models. All budget IDs are **verified live** against the gateway catalog.
+
+| Tier | quality (default) | budget | budget price ($/1M in·out) | vs quality |
+|------|-------------------|--------|-----------------------------|-----------|
+| fast | `openai/gpt-4o-mini` | `amazon/nova-micro` | $0.035 · $0.14 | ~4x cheaper |
+| reasoning | `anthropic/claude-opus-4.8` | `alibaba/qwen3.7-flash` (hosted Qwen, 991k ctx) | $0.03 · $0.13 | ~100x cheaper |
+| vision | `openai/gpt-4o` | `alibaba/qwen3.7-flash` (hosted Qwen vision) | $0.03 · $0.13 | ~100x cheaper |
+| coding | `anthropic/claude-sonnet-4` | `alibaba/qwen3-coder-30b-a3b` (Qwen coder) | $0.15 · $0.60 | ~20x cheaper |
+
+Budget fallback chains include **free** models where available (e.g. vision falls back to `inclusionai/ling-3.0-flash-vl-free`, $0). Note `alibaba/qwen3.7-flash` is a *thinking* model — excellent quality, but slower/more verbose, so it's used for reasoning/vision, not the latency-sensitive fast tier.
+
+```bash
+# Cheapest run: cheap models on every tier, including fast
+TIER_PROFILE=budget FAST_TIER_PROVIDER=gateway npm run demo
+```
+
+Fully free tiers exist too (e.g. `inclusionai/ling-3.0-flash-vl-free`, `poolside/laguna-s-2.1-free`) — swap them into `BUDGET_TIER_MODELS` in `src/router.ts` if you want $0 over cheap-but-paid.
 
 ### Credit warnings (not caps)
 

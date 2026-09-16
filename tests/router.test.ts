@@ -5,6 +5,11 @@ import {
   fastTierProvider,
   modelForInput,
   setFastTierProvider,
+  tierProfile,
+  activeTierModels,
+  activeTierFallbacks,
+  TIER_MODELS,
+  BUDGET_TIER_MODELS,
   type RouteInput,
 } from '../src/router';
 
@@ -81,6 +86,28 @@ describe('fast-tier toggle precedence', () => {
   it('ignores an invalid env value', () => {
     process.env.FAST_TIER_PROVIDER = 'nonsense';
     expect(fastTierProvider()).toBe('openrouter');
+  });
+});
+
+describe('tier profile (quality vs budget)', () => {
+  beforeEach(() => delete process.env.TIER_PROFILE);
+  afterEach(() => delete process.env.TIER_PROFILE);
+
+  it('defaults to quality (premium models)', () => {
+    expect(tierProfile()).toBe('quality');
+    expect(activeTierModels()).toBe(TIER_MODELS);
+    expect(activeTierModels().vision).toBe('openai/gpt-4o');
+  });
+
+  it('switches to budget (cheap hosted models) via env', () => {
+    process.env.TIER_PROFILE = 'budget';
+    expect(tierProfile()).toBe('budget');
+    expect(activeTierModels()).toBe(BUDGET_TIER_MODELS);
+    // hosted Qwen for vision/reasoning/coding — no local compute
+    expect(activeTierModels().vision).toBe('alibaba/qwen3.7-flash');
+    expect(activeTierModels().reasoning).toBe('alibaba/qwen3.7-flash');
+    expect(activeTierModels().coding).toBe('alibaba/qwen3-coder-30b-a3b');
+    expect(activeTierFallbacks().vision).toContain('inclusionai/ling-3.0-flash-vl-free');
   });
 });
 
