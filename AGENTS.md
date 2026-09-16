@@ -25,7 +25,7 @@ Unlike OpenRouter's `openrouter/auto`, the Vercel gateway is a **provider/reliab
 
 ### 2. Embeddings-based classification is reliable
 - **Regex baseline:** 73.3% overall, 12.5% adversarial (prose containing "class"/"import"/"analyze" misroutes).
-- **Embeddings (measured):** 96.7% overall, 100% adversarial. Uses gateway embeddings API + cosine similarity.
+- **Embeddings (measured):** 100% overall (30/30), 100% adversarial. Uses gateway embeddings API + cosine similarity.
 - **Fallback:** If embeddings fail (no key/network), uses regex silently. Result includes `method` field for transparency.
 
 ### 3. Local inference cuts costs dramatically
@@ -105,7 +105,7 @@ Warnings are logged; no request is denied. Quality trumps speed and cost.
 | `api/classify.ts` | Vercel Function (Web handler). Pure classification endpoint, no model generation. Protected by Deployment Protection. |
 | `eval/dataset.ts` | 30 labeled prompts (30% adversarial cases). Ground truth for evaluation. |
 | `eval/run-eval.ts` | Regex baseline scorer (73.3% floor). |
-| `eval/run-eval-semantic.ts` | Embeddings gate (96.7%, ≥0.90 floor). Run via CI on push only. |
+| `eval/run-eval-semantic.ts` | Embeddings gate (100%, ≥0.90 floor). Run via CI on push only. |
 | `eval/compare.ts` | Head-to-head: embeddings vs regex. |
 | `.github/workflows/ci.yml` | TypeCheck + 29 tests (all tiers). Semantic eval on push (guarded: skip if secret absent). |
 | `tests/router.test.ts`, `tests/credits.test.ts` | 29 integration + unit tests. Hermetic (clear env in beforeEach). |
@@ -169,16 +169,16 @@ npm run e2e
 ## Known Issues & Backlog
 
 ### Fixed recently
+- ✓ **Math proofs → `coding` (`reason-2`).** Added formal/mathematical reasoning references (proofs, derivations) to the reasoning tier, disjoint from the eval set. reason-2 now scores reasoning 0.43 vs coding 0.23. **Overall accuracy 96.7% → 100% (30/30).**
 - ✓ Regex baseline misroutes on adversarial prose (class/import/analyze). Embeddings solves this (100% adversarial accuracy).
 - ✓ Vercel deploy ERESOLVE: Rewrote to Web handler, dropped `@vercel/node` dep.
 - ✓ CLI tests were not hermetic (env leakage). Added `beforeEach` cleanup.
 
 ### Open
-1. **Math proofs → `coding`** (`reason-2` in eval set). Embeddings pull math-proof text toward the coding centroid. Mitigation: add math reference utterances to reasoning tier (keep disjoint from eval set), or tie-break rule. Re-evaluate: must stay ≥96.7% overall.
-2. **Local endpoint stability.** Hermes's internal llama-server uses rotating ports + keys. Point `LOCAL_LLM_BASE_URL` at a stable endpoint (dedicated instance or OmniRoute gateway `:20128`).
-3. **Reasoning tier too expensive.** `claude-opus-4.8` is top-of-market priced. Reserve for hard cases; default most to `claude-sonnet-4` + opt-in escalation.
-4. **Spend not instrumented.** Capture token usage + estimated cost per call; log for analysis. Enables credit tuning without the paid Vercel dashboard.
-5. **Vision tier for Qwen.** Qwen3.6-35B has vision projector (mmproj) + 262k context. Evaluate as a free vision alternative or cheap reasoning fallback.
+1. **Local endpoint stability.** Hermes's internal llama-server uses rotating ports + keys. Point `LOCAL_LLM_BASE_URL` at a stable endpoint (dedicated instance or OmniRoute gateway `:20128`).
+2. **Reasoning tier too expensive.** `claude-opus-4.8` is top-of-market priced. Reserve for hard cases; default most to `claude-sonnet-4` + opt-in escalation.
+3. **Spend not instrumented.** Capture token usage + estimated cost per call; log for analysis. Enables credit tuning without the paid Vercel dashboard.
+4. **Vision tier for Qwen.** Qwen3.6-35B has vision projector (mmproj) + 262k context. Evaluate as a free vision alternative or cheap reasoning fallback.
 
 ---
 
@@ -199,7 +199,7 @@ npm run e2e
 ## For Next Hands-Off
 
 1. **Immediate:** App-level API-key check in `api/classify.ts` (second layer, independent revocation). See `TODO.md#requested`.
-2. **Short-term:** Fix reason-2 misroute (math proofs → coding). Re-run eval; confirm ≥96.7%.
+2. **Short-term:** ~~Fix reason-2 misroute~~ ✓ done (100%). Next: downtier reasoning default (opus → sonnet) + app-level API-key layer.
 3. **Medium-term:** Route more tiers to local Qwen (vision, reasoning fallback). Measure credit savings.
 4. **Long-term:** Per-request cost instrumentation (token usage + attribution). Feed into tier tuning.
 

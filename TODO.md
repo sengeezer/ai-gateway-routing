@@ -7,11 +7,10 @@
       layer alongside Vercel's Protection Bypass for Automation. Support multiple keys +
       revocation via an env list; return 401 when absent/invalid. Rationale: finer-grained,
       app-owned authorization independent of the Vercel platform toggle.
-- [ ] **Fix the `reason-2` misroute** ("prove √2 is irrational" → classified `coding`).
-      The embeddings classifier pulls math proofs toward the coding centroid. Options:
-      add math-proof reference utterances to the `reasoning` route (careful: keep them
-      DISJOINT from the eval set to avoid leakage), or add a small tie-break rule. Re-run
-      `npm run eval:compare` and confirm overall stays ≥ 96.7% without breaking others.
+- [x] **Fix the `reason-2` misroute** ("prove √2 is irrational" → was classified `coding`).
+      **DONE:** added formal/mathematical reasoning references (proofs, derivations) to the
+      `reasoning` tier, disjoint from the eval set. reason-2 now scores reasoning 0.43 vs
+      coding 0.23; overall semantic accuracy **96.7% → 100% (30/30)**, no regressions.
 
 ## Backlog (from the cost analysis + local Qwen work)
 

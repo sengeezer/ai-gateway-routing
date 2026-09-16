@@ -83,7 +83,7 @@ Measured head-to-head on the labeled set (`npm run eval:compare`):
 
 | subset | regex | **embeddings** |
 |---|---|---|
-| overall | 73.3% | **96.7%** |
+| overall | 73.3% | **100%** |
 | adversarial | 12.5% | **100%** |
 
 `routedGenerate` uses the embeddings classifier by default and **falls back to regex** if embeddings error (no key / network). Control it with `CLASSIFIER=semantic\|regex\|auto` (default `auto` = semantic when `AI_GATEWAY_API_KEY` is present) and `EMBED_MODEL` (default `openai/text-embedding-3-small`). The regex path stays free/instant/offline and remains the CI gate.

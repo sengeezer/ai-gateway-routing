@@ -48,6 +48,12 @@ const REFERENCES: Record<TextTier, string[]> = {
     'what assumptions underlie this argument and are they sound',
     'plan a migration strategy weighing cost, risk, and timeline',
     'justify which architecture is better for our constraints',
+    // Formal/mathematical reasoning — proofs and derivations (disjoint from eval set).
+    'prove that there are infinitely many prime numbers',
+    'show by mathematical induction that this formula holds for all natural numbers',
+    'derive the quadratic formula by completing the square',
+    'demonstrate rigorously why the harmonic series diverges',
+    'explain why no algorithm can decide the halting problem',
   ],
   coding: [
     'write a function that reverses a string',
