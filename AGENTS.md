@@ -1,103 +1,95 @@
-# AI Gateway Routing — Task-Type LLM Classifier (Production)
+# AI Gateway Routing — Task-Type LLM Classifier
 
-> **Handoff context for fresh sessions.** This project implements task-type-based model routing with a measured, gated embeddings classifier. It's live on Vercel, open-source on GitHub, and reduces credit spend via tiering + local-inference opt-ins.
+> **Handoff context for fresh sessions.** Task-type-based model routing on the Vercel AI Gateway with a regex classifier, an embeddings classifier, and a new off-by-default Jev shadow classifier under provisional evaluation. Quality-first: cost is a warning signal, never a cap.
 
 ## Goal
 
-Route requests to the best-suited model per task type: fast (cost/latency), reasoning (quality), vision (multimodal), coding (code quality). Minimize credit spend through intelligent tiering and optional local inference.
+Route requests to a tier (fast / reasoning / vision / coding), then to a per-tier model. The per-tier static model policy is a **starting hypothesis, not a proven best-per-task-type choice** — no per-tier response-quality measurement exists yet. Minimize credit spend through tiering and warnings, never through silent downgrades.
 
-## Status: Production
+## Status: code complete, evaluation provisional
 
 | Aspect | State |
 |--------|-------|
-| **Classifier** | Embeddings-based (96.7% accuracy on labeled eval set). Regex fallback for offline mode. |
-| **Deployment** | Live on Vercel: `https://ai-gateway-routing.vercel.app/api/classify` (protected). Public GitHub repo: `https://github.com/sengeezer/ai-gateway-routing` (MIT). |
-| **CI Gate** | Semantic accuracy ≥0.90 enforced on push (uses `AI_GATEWAY_API_KEY` repo secret). Regex gate ≥0.70 on all events. |
-| **Fast Tier** | Defaults to OpenRouter's `openrouter/auto`, with opt-ins for Vercel gateway (`openai/gpt-4o-mini`) or local Qwen (`FAST_TIER_PROVIDER=local`). |
-| **Access Control** | Vercel Deployment Protection (SSO for humans). Add "Protection Bypass for Automation" secret in dashboard; authorized callers send header `x-vercel-protection-bypass: <secret>`. |
+| **Classifiers** | Regex (free/offline, CI gate). Embeddings (default in `routedGenerate` when `AI_GATEWAY_API_KEY` present; regex fallback). Jev (off-by-default shadow; see below). |
+| **Test suite** | Run `npm run check` for the current count; the original "29 tests" figure is stale. |
+| **Deployment** | Vercel project exists; `FAST_TIER_PROVIDER=openrouter` is set in Production, Preview, and Development (value encrypted in dashboard). **No deployed behavior — including fast-tier generation — has been tested live.** `api/classify.ts` is regex-only classification with no generation. |
+| **Fast Tier** | Built-in default `openrouter`. Legacy OpenRouter Auto (`openrouter/auto`) is **deprecated upstream** (Auto Beta `openrouter/auto-beta` exists) — this project keeps the stable legacy slug and does not silently switch to beta. |
+| **Holdout** | **Sealed.** 40 pilot holdout cases have provisional labels only; no predictions, no human adjudication. |
+| **Docs honesty** | Price tables are hardcoded (2026-09) and go stale; unknown model ⇒ estimated $0 rendered as "(free)" — unknown cost is not free. |
 
 ---
 
-## Key Findings (Verified)
+## Verified Findings
 
 ### 1. Vercel AI Gateway has no native auto-router
-Unlike OpenRouter's `openrouter/auto`, the Vercel gateway is a **provider/reliability** layer (fallbacks, cost sorting). Task-type routing must be done at the **application level** — classify the request, then hand the gateway an explicit model + fallbacks.
+Unlike OpenRouter's Auto Router, the Vercel gateway is a **provider/reliability** layer (fallbacks, cost sorting). Task-type routing must be done at the **application level** — classify the request, then hand the gateway an explicit model + fallbacks.
 
-### 2. Embeddings-based classification is reliable
-- **Regex baseline:** 73.3% overall, 12.5% adversarial (prose containing "class"/"import"/"analyze" misroutes).
-- **Embeddings (measured):** 100% overall (30/30), 100% adversarial. Uses gateway embeddings API + cosine similarity.
-- **Fallback:** If embeddings fail (no key/network), uses regex silently. Result includes `method` field for transparency.
+### 2. Classifier accuracy — in-sample vs pilot
+- **Regex baseline:** ~73.3% overall, ~12.5% adversarial on `eval/dataset.ts` (free, offline, CI gate ≥0.70).
+- **Embeddings:** 100% (30/30) on the earlier **tuned 30-case set** — the set the classifier was tuned against. **Not a holdout**; in-sample only. Regex fallback is silent; the result carries a `method` field.
+- **Jev (provisional):** 53/60 routing agreement on the 60-case validation split — see §4.
 
-### 3. Cheap/free hosted models cut costs — no local compute
-Set `TIER_PROFILE=budget` to route every gateway tier to cheap/free models hosted **on the gateway** (nothing runs on your machine). All IDs verified live. Prices $/1M in·out:
-- fast → `amazon/nova-micro` ($0.035/$0.14)
-- reasoning → `alibaba/qwen3.7-flash` (hosted Qwen, thinking, 991k ctx — $0.03/$0.13, ~100x cheaper than opus)
-- vision → `alibaba/qwen3.7-flash` (hosted Qwen vision — $0.03/$0.13, ~100x cheaper than gpt-4o)
-- coding → `alibaba/qwen3-coder-30b-a3b` ($0.15/$0.60, ~20x cheaper than sonnet)
+### 3. Fast-tier provider — built-in, hosted
+Precedence: per-call `fastProvider` → `setFastTierProvider()` → `FAST_TIER_PROVIDER=gateway|openrouter|local` → built-in default `openrouter`. The Vercel project sets `FAST_TIER_PROVIDER=openrouter` (Production/Preview/Development). The `local` path (OpenAI-compatible server) is **opt-in legacy only** — no local server is part of the intended setup; do not recommend local-first setups.
 
-Budget fallbacks include FREE models (vision → `inclusionai/ling-3.0-flash-vl-free`, $0). Default profile stays `quality` (premium models) — quality-first. The on-device `FAST_TIER_PROVIDER=local` path still exists but is **legacy** (user's machine is too slow for local inference); prefer the hosted budget profile.
+### 4. Jev pilot — provisional, no adjudication
+`src/jev-classifier.ts` asks TypeSafe's Jev model to pick `fast | reasoning | coding | abstain` (**no vision option**), returning a validated typed judgment with full probabilities. It never routes live traffic and never falls back silently.
 
-### 4. Spend data is limited
-Vercel's detailed spend reports (per-model breakdown) require a paid plan (403/"requires a paid plan"). The `/v1/credits` endpoint gives real-time balance/used but no attribution. **Mitigate:** capture token usage + estimated cost per call, instrument the code.
+- **Transports** (`JEV_TRANSPORT`, default `direct`): `direct` → `https://api.typesafe.ai`, model pinned `jev-1.13.0`, key `TYPESAFE_API_KEY`; `gateway` → `https://ai-gateway.vercel.sh/typesafe`, model `typesafe-ai/jev`, key `AI_GATEWAY_API_KEY`. Both speak the TypeSafe v1 `POST /v1/systemone` shape; responses are schema-validated identically.
+- **Budgets:** 8s/attempt, 1 retry, 15s total deadline.
+- **Pilot dataset** (`eval/pilot-dataset.ts`): 100 provisional (agent-authored) cases, split **60 validation / 40 holdout**. No human adjudication has occurred.
+- **Live shadow runs** (`JEV_TRANSPORT=gateway npx tsx eval/shadow-compare.ts --live --json`, validation split, provisional labels): regex **36/60**, embeddings **45/60**, Jev policy **53/60** — **zero failures** across all three comparators. Five vision decisions were deterministic image rules, not Jev requests; Jev model-only routing agreement was **48/55**. Confidence + full distribution are recorded for the 55 text-model rows.
+- **Confidence is not calibrated.** Jev's confidence/`probabilities` are raw model output; selective-accuracy and calibration tables are computed but unvalidated. Do not quote them as probabilities.
+- **Routing agreement only.** None of these numbers measures response quality of the routed model. The holdout was never touched and stays sealed until an adjudicated artifact exists (`eval/holdout-adjudicated.json` with `{ adjudicated: true, labels }`).
+
+### 5. Cost estimation honesty
+- `src/cost-estimator.ts` prices are **hardcoded, dated 2026-09** — they go stale; re-verify against gateway docs.
+- A model missing from the table estimates `$0`, and `formatCost()` renders it `(free)`. **Unknown cost is not free.**
+- `openrouter/auto`'s price entry is a conservative guess, not OpenRouter's actual rate.
+- `src/credits.ts` warns on low balances; never caps or downgrades. Quality trumps cost.
+
+### 6. Spend data is limited
+Vercel's per-model spend breakdown requires a paid plan (403). `/v1/credits` gives balance/used with no attribution. Mitigate with per-call token usage + cost instrumentation.
 
 ---
 
 ## Architecture
 
-### Tiers → Model chains
+### Tiers → Model chains (static policy — hypothesis, not proven best)
 
 ```typescript
 type Tier = 'fast' | 'reasoning' | 'vision' | 'coding';
 const TIER_MODELS = {
-  fast: 'openai/gpt-4o-mini',           // or openrouter/auto, or local Qwen
+  fast: 'openai/gpt-4o-mini',           // when provider = gateway
   reasoning: 'anthropic/claude-opus-4.8',
   vision: 'openai/gpt-4o',
   coding: 'anthropic/claude-sonnet-4',
 };
 ```
 
-Fallback chains per tier (e.g. fast → `google/gemini-2.5-flash-lite`, etc.) auto-retry on failure.
+Fallback chains per tier auto-retry on failure. `TIER_PROFILE=budget` swaps in cheap/free hosted models (`amazon/nova-micro`, `alibaba/qwen3.7-flash`, `alibaba/qwen3-coder-30b-a3b`, free fallbacks like `inclusionai/ling-3.0-flash-vl-free`). Default profile is `quality`. Budget prices in code are 2026-09 snapshots — verify before trusting.
 
 ### Classification
 
-1. **Embeddings** (default, if `AI_GATEWAY_API_KEY` set):
-   - Reference utterances per tier.
-   - Embed prompt + references via gateway.
-   - Cosine similarity → highest-scoring tier.
-   - **Confidence:** inspect the similarity gap; tie-break rules available.
+1. **Embeddings** (default when `AI_GATEWAY_API_KEY` set): reference utterances per tier, `embedMany` via the gateway, max cosine similarity; vision stays a hard rule. Fallback to regex on error; `method` field reports which ran.
+2. **Regex** (fallback, free, offline): keyword heuristics; the CI gate.
+3. **Jev** (shadow only): TypeSafe model choice over `fast/reasoning/coding/abstain`, explicit `abstain` on ambiguity, errors surfaced as counted failures.
 
-2. **Regex** (fallback, free, offline):
-   - Keywords: `def`/`import`/`function` → `coding`; `image` → `vision`; etc.
-   - Thresholds & heuristics tuned for 73.3% accuracy on eval set.
+### Fast-Tier Toggle (four levels, first match wins)
 
-### Fast-Tier Toggle
+1. Per-call: `routedGenerate({ prompt, fastProvider: 'openrouter' })`
+2. Programmatic: `setFastTierProvider('gateway')`
+3. Env: `FAST_TIER_PROVIDER=gateway|openrouter|local`
+4. Built-in default: `openrouter`
 
-Four levels of precedence (first match wins):
-1. **Per-call:** `routedGenerate({ prompt, fastProvider: 'local' })`
-2. **Programmatic:** `setFastTierProvider('openrouter')`
-3. **Env:** `FAST_TIER_PROVIDER=gateway|openrouter|local`
-4. **Default:** `openrouter`
-
-### Endpoint Protection
+### Public endpoint
 
 ```
-GET/POST /api/classify
-  Body: { prompt: string; images?: string[] }
-  Headers: x-vercel-protection-bypass: <secret> (if SSO is enabled)
-  Returns: { tier, provider, model, method } or 400
+POST /api/classify   Body: { prompt, hasImages?, forceTier?, fastProvider? }
+Returns: { tier, provider, model } | 400
 ```
 
-Status: **401 when Vercel Deployment Protection is active without the bypass secret.** Enable the secret in `Project → Settings → Deployment Protection → Protection Bypass for Automation`.
-
-### Credit Warnings (not caps)
-
-```typescript
-const { balance, used } = await getCredits(provider);
-if (balance < 50) warn('Low credits on gateway:', balance);
-if (balance < 20) warn('Critical credits on gateway:', balance);
-```
-
-Warnings are logged; no request is denied. Quality trumps speed and cost.
+**Regex-only classification. No model call, no generation.** Live generation is not exposed publicly.
 
 ---
 
@@ -105,124 +97,98 @@ Warnings are logged; no request is denied. Quality trumps speed and cost.
 
 | File | Purpose |
 |------|---------|
-| `src/router.ts` | Main classifier + tier→model map + async resolver. Exports: `classify()`, `classifyAsync()`, `modelForInput()`, `routedGenerate()`, `setFastTierProvider()`. |
-| `src/semantic-classifier.ts` | Embeddings logic: reference utterances, cosine similarity, configurable via `CLASSIFIER` + `EMBED_MODEL`. |
-| `src/credits.ts` | Credit balance checks + low-balance warnings for gateway + OpenRouter. |
-| `api/classify.ts` | Vercel Function (Web handler). Pure classification endpoint, no model generation. Protected by Deployment Protection. |
-| `eval/dataset.ts` | 30 labeled prompts (30% adversarial cases). Ground truth for evaluation. |
-| `eval/run-eval.ts` | Regex baseline scorer (73.3% floor). |
-| `eval/run-eval-semantic.ts` | Embeddings gate (100%, ≥0.90 floor). Run via CI on push only. |
-| `eval/compare.ts` | Head-to-head: embeddings vs regex. |
-| `.github/workflows/ci.yml` | TypeCheck + 29 tests (all tiers). Semantic eval on push (guarded: skip if secret absent). |
-| `tests/router.test.ts`, `tests/credits.test.ts` | 29 integration + unit tests. Hermetic (clear env in beforeEach). |
+| `src/router.ts` | Classifier selection, tier→model maps + fallback chains, fast-tier resolver. Exports `classify()`, `classifyAsync()`, `modelForInput()`, `routedGenerate()`, `setFastTierProvider()`. |
+| `src/semantic-classifier.ts` | Embeddings classifier (`CLASSIFIER`, `EMBED_MODEL`). |
+| `src/jev-classifier.ts` | Off-by-default Jev shadow adapter: transports, pinned model, budgets, typed result, error kinds. |
+| `src/credits.ts` | Credit balance checks + low-balance warnings (never caps). |
+| `src/cost-estimator.ts` | Hardcoded-price cost estimates. Unknown model ⇒ $0 (**not** free); prices dated 2026-09. |
+| `api/classify.ts` | Vercel Function. Pure regex classification endpoint; no generation. |
+| `eval/dataset.ts` | Earlier tuned 30-case labeled set (in-sample; not a holdout). |
+| `eval/pilot-dataset.ts` | 100 provisional cases: 60 validation / 40 holdout (sealed, no adjudication). |
+| `eval/run-eval.ts` | Regex baseline scorer. |
+| `eval/run-eval-semantic.ts` | Embeddings scorer (on the tuned set). |
+| `eval/compare.ts` | Head-to-head embeddings vs regex on the tuned set. |
+| `eval/shadow-compare.ts` | Offline-first three-way shadow harness (regex/embeddings/Jev). Holdout refused without an adjudicated artifact; no writes; no prompt text in rows. |
+| `eval/shadow-metrics.ts` | Accuracy/Wilson, macro-F1, confusion, latency, selective, calibration. |
+| `tests/*.test.ts` | Offline unit/contract tests; run `npm run test` for the current count. |
 | `examples/demo.ts` | Dry-run routing table (no API calls). |
 | `examples/live-e2e.ts` | Live generation across all four tiers. Requires keys. |
-| `README.md` | Quick start, accuracy numbers, tier descriptions, local-inference guide. |
-| `TODO.md` | Backlog: app-level API keys, reason-2 misroute, vision tier for Qwen, stable local endpoint, reasoning downgrade, per-request cost instrumentation. |
 
 ---
 
 ## Environment Variables
 
 ```bash
-# Required
-AI_GATEWAY_API_KEY=sk-...           # Vercel AI Gateway
-OPENROUTER_API_KEY=sk-...           # OpenRouter (if using openrouter/auto)
+# Required (per provider you actually use)
+AI_GATEWAY_API_KEY=          # Vercel AI Gateway
+OPENROUTER_API_KEY=          # OpenRouter fast tier (legacy openrouter/auto)
+TYPESAFE_API_KEY=            # Jev direct transport (only if not using gateway)
 
 # Optional
-FAST_TIER_PROVIDER=openrouter|gateway|local  # default: openrouter
-CLASSIFIER=auto|semantic|regex               # default: auto (embeddings if key, else regex)
-EMBED_MODEL=text-embedding-3-small           # default: configured in semantic-classifier.ts
+FAST_TIER_PROVIDER=openrouter|gateway|local  # default openrouter; set to openrouter on Vercel (all envs)
+TIER_PROFILE=quality|budget                  # default quality
+CLASSIFIER=auto|semantic|regex               # default auto (embeddings if key, else regex)
+EMBED_MODEL=openai/text-embedding-3-small
+JEV_TRANSPORT=direct|gateway                 # default direct
+TYPESAFE_BASE_URL=                           # override for the direct TypeSafe API
 
-# Local inference (FAST_TIER_PROVIDER=local)
-LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1
-LOCAL_LLM_API_KEY=local
-LOCAL_LLM_MODEL=Qwen3.6-35B-A3B
+# Local inference — LEGACY, opt-in only. No local server is part of the intended setup.
+# LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1
+# LOCAL_LLM_API_KEY=
+# LOCAL_LLM_MODEL=
 ```
+
+Never put secret values in this file, the README, or code.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Install
 npm install
-
-# Typecheck
 npm run typecheck
+npm run test        # offline; reports current test count
+npm run demo        # dry-run routing table
+npm run eval        # regex baseline
+npm run eval:semantic   # embeddings on tuned set (needs key)
+npm run eval:compare    # head-to-head on tuned set
 
-# Test (offline, 29 tests)
-npm run test
+# Shadow comparison (Jev pilot)
+npx tsx eval/shadow-compare.ts            # offline: regex only, validation split
+npx tsx eval/shadow-compare.ts --live     # + embeddings + Jev (needs keys)
+JEV_TRANSPORT=gateway npx tsx eval/shadow-compare.ts --live
 
-# Dry-run classifier (no API calls)
-npm run demo
-
-# Evaluate regex baseline
-npm run eval
-
-# Evaluate embeddings (requires AI_GATEWAY_API_KEY)
-npm run eval:semantic
-
-# Compare head-to-head
-npm run eval:compare
-
-# Live end-to-end (all tiers, requires keys)
-npm run e2e
+npm run e2e        # live generation across tiers (needs keys)
 ```
 
 ---
 
 ## Known Issues & Backlog
 
-### Fixed recently
-- ✓ **Math proofs → `coding` (`reason-2`).** Added formal/mathematical reasoning references (proofs, derivations) to the reasoning tier, disjoint from the eval set. reason-2 now scores reasoning 0.43 vs coding 0.23. **Overall accuracy 96.7% → 100% (30/30).**
-- ✓ Regex baseline misroutes on adversarial prose (class/import/analyze). Embeddings solves this (100% adversarial accuracy).
-- ✓ Vercel deploy ERESOLVE: Rewrote to Web handler, dropped `@vercel/node` dep.
-- ✓ CLI tests were not hermetic (env leakage). Added `beforeEach` cleanup.
+### Evaluation (highest priority)
+1. **Adjudicate the pilot.** All 100 pilot labels are provisional. Adjudicate the 40 holdout cases first (human review → `eval/holdout-adjudicated.json` with `adjudicated: true` + labels), then and only then run `npx tsx eval/shadow-compare.ts --live --holdout`.
+2. **Calibrate Jev confidence.** Jev's confidence/distribution is unvalidated; a calibrated gate (selective accuracy/coverage) is the next measurement step.
+3. **Response quality is unmeasured.** Routing-agreement numbers say nothing about the routed models' outputs; static tier policy is unproven.
+4. **Prices drift.** `src/cost-estimator.ts` table (2026-09) is stale-prone; unknown models estimate $0 and render "(free)" — treat as unknown, not free.
 
-### Open
-1. **Local endpoint stability.** Hermes's internal llama-server uses rotating ports + keys. Point `LOCAL_LLM_BASE_URL` at a stable endpoint (dedicated instance or OmniRoute gateway `:20128`).
-2. **Reasoning tier too expensive.** `claude-opus-4.8` is top-of-market priced. Reserve for hard cases; default most to `claude-sonnet-4` + opt-in escalation.
-3. **Spend not instrumented.** Capture token usage + estimated cost per call; log for analysis. Enables credit tuning without the paid Vercel dashboard.
-4. **Vision tier for Qwen.** Qwen3.6-35B has vision projector (mmproj) + 262k context. Evaluate as a free vision alternative or cheap reasoning fallback.
-
----
-
-## Deployment & Access
-
-### Vercel (live)
-- URL: `https://ai-gateway-routing.vercel.app/api/classify`
-- **Protected:** Vercel Deployment Protection + SSO. Add "Protection Bypass for Automation" secret to allow authorized API callers.
-- See `.github/workflows/ci.yml` for live accuracy gate (semantic eval on push).
-
-### GitHub (public, MIT)
-- Repo: `https://github.com/sengeezer/ai-gateway-routing`
-- All code, tests, eval harness, CI/CD are open. Others can fork and adapt.
-- Latest: `eval/run-eval-semantic.ts` integrated into CI; local Qwen route added.
+### Other
+- Reasoning tier cost: `claude-opus-4.8` is top-of-market; consider downtiering + opt-in escalation once tier policy is measured.
+- Legacy OpenRouter `openrouter/auto` is deprecated upstream; keep the stable slug for now, re-evaluate explicitly (not silently) against `openrouter/auto-beta`.
 
 ---
 
 ## For Next Hands-Off
 
-1. **Immediate:** App-level API-key check in `api/classify.ts` (second layer, independent revocation). See `TODO.md#requested`.
-2. **Short-term:** ~~Fix reason-2 misroute~~ ✓ done (100%). Next: downtier reasoning default (opus → sonnet) + app-level API-key layer.
-3. **Medium-term:** Route more tiers to local Qwen (vision, reasoning fallback). Measure credit savings.
-4. **Long-term:** Per-request cost instrumentation (token usage + attribution). Feed into tier tuning.
+1. **Immediate:** human adjudication of the 40 holdout cases; unseal the holdout only against adjudicated labels.
+2. **Short-term:** calibration study for Jev confidence; decide whether Jev (or a hybrid) becomes the production classifier.
+3. **Medium-term:** measure per-tier response quality to validate (or replace) the static tier→model policy; per-request cost instrumentation.
+4. **Deployed config note:** `FAST_TIER_PROVIDER=openrouter` is set on Vercel (Production/Preview/Development) but no deployed fast-tier generation has been exercised — verify before relying on it.
 
 ---
 
 ## Reference Docs
 
-- **Vercel AI Gateway:** https://vercel.com/docs/ai-gateway, https://vercel.com/ai-gateway/models
-- **Vercel Protection Bypass:** https://vercel.com/docs/deployments/deployment-protection
-- **AI SDK v5:** https://sdk.vercel.ai (generateText, embedMany, gateway provider)
-- **Eval harness:** `npm run eval:semantic` (uses published eval set + measured thresholds)
-
----
-
-## Anchor for Triage
-
-- **Credit burn (high priority):** Local Qwen route is wired. Test stability of `LOCAL_LLM_BASE_URL` endpoint (rotating ports in Hermes). Consider dedicated instance or OmniRoute.
-- **Reasoning tier (medium):** Audit whether `claude-opus-4.8` is actually needed for most reasoning requests. Downtier default; add escalation.
-- **Spend visibility (medium):** Detailed reports are a paid feature. Capture `providerMetadata.gateway` + token usage to instrument cost per call.
-- **Endpoint gating (low):** Protection Bypass is live. App-level key layer is TODO but optional (second layer of auth).
+- Vercel AI Gateway: https://vercel.com/docs/ai-gateway · https://vercel.com/ai-gateway/models
+- OpenRouter Auto Router (Auto deprecated; Auto Beta): https://openrouter.ai/docs/guides/routing/routers/auto-router
+- TypeSafe Jev: https://docs.typesafe.ai/api · SDK: `@typesafe-ai/sdk` v0.6.0 (v1 API)
+- AI SDK v5: https://sdk.vercel.ai
