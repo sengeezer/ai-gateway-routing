@@ -16,7 +16,20 @@ import { gateway } from '@ai-sdk/gateway';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { classifySemantic } from './semantic-classifier';
-import { estimateCost, formatCost, type CostEstimate } from './cost-estimator';
+import type { CostEstimate } from './cost-estimator';
+import {
+  buildGenerationRecord,
+  buildPolicy,
+  consoleTelemetrySink,
+  describeClassifier,
+  extractServedIdentity,
+  newRequestId,
+  resolveGenerationCost,
+  sanitizeError,
+  type GenerateTextFn,
+  type GenerateTextResultLike,
+  type GenerationTelemetrySink,
+} from './generation-telemetry';
 
 /** Lazily construct the OpenRouter provider so the API key is read at call time,
  *  not at module load (ESM import hoisting would otherwise beat dotenv setup). */
@@ -29,7 +42,7 @@ function openrouterProvider() {
 }
 
 /** Lazily construct the local (OpenAI-compatible) provider — e.g. a llama.cpp / LM Studio
- *  server hosting Qwen. Free + private; used for the `fast` tier when selected.
+ *  server hosting Qwen. Opt-in only; API-unbilled, but compute costs are unmeasured.
  *  Configure with LOCAL_LLM_BASE_URL (…/v1), LOCAL_LLM_API_KEY, LOCAL_LLM_MODEL. */
 let _local: ReturnType<typeof createOpenAICompatible> | null = null;
 function localProvider() {
@@ -48,7 +61,7 @@ const LOCAL_FAST_MODEL = () => process.env.LOCAL_LLM_MODEL ?? 'local-model';
  * The `fast` tier can be served three ways (see FAST_TIER toggle below):
  *   - 'openrouter' → OpenRouter's Auto Router (`openrouter/auto`) picks the model per request.
  *   - 'gateway'    → the Vercel gateway with an explicit `fast` model ID + fallback chain.
- *   - 'local'      → a local OpenAI-compatible server (e.g. Qwen via llama.cpp): free + private.
+ *   - 'local'      → an opt-in local OpenAI-compatible server; API-unbilled, but compute cost is not zero.
  */
 const OPENROUTER_FAST_MODEL = 'openrouter/auto';
 
@@ -191,15 +204,24 @@ function classifierMode(): ClassifierMode {
 }
 
 /**
+ * Whether an embeddings (semantic) classification attempt is planned for a
+ * classifier mode. Exported so the telemetry can report `requested` vs.
+ * `effective` vs. `fallback` without guessing, and so tests cover it offline.
+ */
+export function semanticPlanned(mode: ClassifierMode, hasGatewayKey: boolean): boolean {
+  return mode === 'semantic' || (mode === 'auto' && hasGatewayKey);
+}
+
+/**
  * Async classification honoring CLASSIFIER (default 'auto').
  * Uses the embeddings classifier when selected/available, and transparently
- * falls back to the regex classifier if embeddings error out (no key, network, etc.).
+ * falls back to the regex classifier if embeddings error out (no key, network, etc).
  */
 export async function classifyAsync(
   input: RouteInput,
 ): Promise<{ tier: TaskTier; method: 'regex' | 'semantic' }> {
   const mode = classifierMode();
-  const useSemantic = mode === 'semantic' || (mode === 'auto' && !!process.env.AI_GATEWAY_API_KEY);
+  const useSemantic = semanticPlanned(mode, !!process.env.AI_GATEWAY_API_KEY);
   if (useSemantic) {
     try {
       return { tier: await classifySemantic(input), method: 'semantic' };
@@ -219,7 +241,10 @@ function buildRoute(tier: TaskTier, input: RouteInput) {
         tier,
         provider: 'openrouter' as const,
         // OpenRouter's Auto Router selects the concrete model per request.
-        model: openrouterProvider()(OPENROUTER_FAST_MODEL),
+        // Usage accounting is requested (documented by the installed provider:
+        // `usage: { include: true }`) so the response carries an in-band billed
+        // `providerMetadata.openrouter.usage.cost` for the baseline telemetry.
+        model: openrouterProvider()(OPENROUTER_FAST_MODEL, { usage: { include: true } }),
         // No gateway providerOptions on this path — routing is OpenRouter-side.
         providerOptions: undefined,
       };
@@ -228,7 +253,7 @@ function buildRoute(tier: TaskTier, input: RouteInput) {
       return {
         tier,
         provider: 'local' as const,
-        // Local OpenAI-compatible server (e.g. Qwen via llama.cpp): free + private.
+        // Opt-in local server; no provider API bill, but compute overhead is unmeasured.
         model: localProvider()(LOCAL_FAST_MODEL()),
         providerOptions: undefined,
       };
@@ -256,38 +281,156 @@ export async function modelForInputAsync(input: RouteInput) {
   return { ...buildRoute(tier, input), method };
 }
 
-/** End-to-end: classify -> route -> generate. Sends images as a multimodal message when present.
- *  Uses the configured classifier (semantic by default) with regex fallback. */
-export async function routedGenerate(input: RouteInput): Promise<GenerateOutput> {
+/**
+ * Optional seams for `routedGenerate`. All default to production behavior; each
+ * exists so the routing + telemetry path can be exercised fully offline.
+ */
+export interface RoutedGenerateDeps {
+  /** Injected generator. Defaults to the AI SDK's `generateText`. */
+  generateText?: GenerateTextFn;
+  /**
+   * Opt-in telemetry sink. Replaces the default metadata-only console line.
+   * A sink that throws is swallowed: telemetry never fails a generation.
+   */
+  sink?: GenerationTelemetrySink;
+  /** Clock injection for deterministic latency in tests. Defaults to `Date.now`. */
+  now?: () => number;
+  /** Request-id factory injection for deterministic tests. Defaults to a UUID. */
+  makeRequestId?: () => string;
+}
+
+function elapsedMs(end: number, start: number): number {
+  const delta = end - start;
+  return Number.isFinite(delta) && delta >= 0 ? delta : 0;
+}
+
+/**
+ * End-to-end: classify -> route -> generate. Sends images as a multimodal message when present.
+ *  Uses the configured classifier (semantic by default) with regex fallback.
+ *
+ * Phase-0 baseline: every call emits one privacy-safe telemetry record (request id,
+ * policy descriptor, classifier requested/effective/fallback, selected vs. actually
+ * served provider/model + generation id, fallback attempts, usage, wall latency and a
+ * cost kind of actual/estimated/unknown). The record never carries prompt text, model
+ * output, headers or keys, and the sink or provider metadata can never break a call.
+ *
+ * `cost` on the returned object remains the STATIC estimate for the model that
+ * actually served the request when that is known (unknown after an unresolved
+ * fallback) — the billed figure, when one is available in band, lives in the
+ * telemetry record's `cost` field. Generation lookup over REST is deferred.
+ */
+export async function routedGenerate(
+  input: RouteInput,
+  deps: RoutedGenerateDeps = {},
+): Promise<GenerateOutput> {
+  const generate = (deps.generateText ?? generateText) as unknown as GenerateTextFn;
+  const now = deps.now ?? (() => Date.now());
+  const sink = deps.sink ?? consoleTelemetrySink;
+  const requestId = (deps.makeRequestId ?? newRequestId)();
+
+  const mode = classifierMode();
   const { tier, provider, method, model, providerOptions } = await modelForInputAsync(input);
+
+  const classifier = describeClassifier({
+    requested: mode,
+    semanticPlanned: semanticPlanned(mode, !!process.env.AI_GATEWAY_API_KEY),
+    effective: method,
+    tier,
+  });
+  const policy = buildPolicy({
+    profile: tierProfile(),
+    models: activeTierModels(),
+    fallbacks: activeTierFallbacks(),
+    fastTierDefault: DEFAULT_FAST_TIER_PROVIDER,
+  });
+  const selected = { provider, model: model.modelId };
+
+  const emit: GenerationTelemetrySink = (record) => {
+    try {
+      sink(record);
+    } catch {
+      // A broken sink (or metadata callback) must never fail the generation.
+    }
+  };
+
+  const startedAt = now();
   const images = input.images ?? [];
-  const res = await generateText({
-    model,
-    ...(providerOptions ? { providerOptions } : {}),
-    ...(images.length > 0
-      ? {
-          messages: [
-            {
-              role: 'user' as const,
-              content: [
-                { type: 'text' as const, text: input.prompt },
-                ...images.map((image) => ({ type: 'image' as const, image })),
-              ],
-            },
-          ],
-        }
-      : { prompt: input.prompt }),
+
+  let res: GenerateTextResultLike;
+  try {
+    res = await generate({
+      model,
+      ...(providerOptions ? { providerOptions } : {}),
+      ...(images.length > 0
+        ? {
+            messages: [
+              {
+                role: 'user' as const,
+                content: [
+                  { type: 'text' as const, text: input.prompt },
+                  ...images.map((image) => ({ type: 'image' as const, image })),
+                ],
+              },
+            ],
+          }
+        : { prompt: input.prompt }),
+    });
+  } catch (error) {
+    // Sanitized failure record (class name + HTTP status only), then rethrow
+    // the ORIGINAL error so callers keep the existing failure behavior.
+    emit(
+      buildGenerationRecord({
+        requestId,
+        policy,
+        classifier,
+        selected,
+        identity: extractServedIdentity({
+          selectedProvider: provider,
+          selectedModel: model.modelId,
+        }),
+        latencyMs: elapsedMs(now(), startedAt),
+        tokens: null,
+        status: 'error',
+        error: sanitizeError(error),
+        failureStage: 'generation',
+      }),
+    );
+    throw error;
+  }
+
+  const latencyMs = elapsedMs(now(), startedAt);
+  const identity = extractServedIdentity({
+    selectedProvider: provider,
+    selectedModel: model.modelId,
+    response: res.response,
+    providerMetadata: res.providerMetadata,
+  });
+  const { estimate: cost } = resolveGenerationCost({
+    provider,
+    selectedModel: model.modelId,
+    served: identity.served,
+    tokens: {
+      inputTokens: res.usage?.inputTokens ?? 0,
+      outputTokens: res.usage?.outputTokens ?? 0,
+    },
+    billedUSD: identity.billedUSD,
+    billedSource: identity.billedSource,
   });
 
-  // Estimate and log cost
-  const cost = estimateCost(
-    model.modelId,
-    provider,
-    res.usage.inputTokens ?? 0,
-    res.usage.outputTokens ?? 0,
-  );
-  console.log(
-    `[${tier}/${provider}] ${model.modelId} — ${res.usage.inputTokens}+${res.usage.outputTokens} tokens, cost ${formatCost(cost)}`,
+  emit(
+    buildGenerationRecord({
+      requestId,
+      policy,
+      classifier,
+      selected,
+      identity,
+      latencyMs,
+      tokens: {
+        inputTokens: res.usage?.inputTokens ?? null,
+        outputTokens: res.usage?.outputTokens ?? null,
+        totalTokens: res.usage?.totalTokens ?? null,
+      },
+    }),
   );
 
   return { tier, provider, method, text: res.text, usage: res.usage, cost };

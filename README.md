@@ -15,7 +15,7 @@ Non-`fast` tiers get an explicit model ID **plus a fallback chain** (`providerOp
 
 > **Why not just use the gateway's auto-router?** The Vercel AI Gateway is a provider/reliability layer (fallbacks, cost sorting, provider ordering) — it does **not** classify a request and pick a model. Task-type routing is done at the application level.
 
-> **OpenRouter Auto status:** the legacy Auto router (`openrouter/auto`, NotDiamond-based) is **deprecated upstream**; OpenRouter's docs point at Auto Beta (`openrouter/auto-beta`). This project deliberately keeps using the stable legacy slug and does **not** silently switch to the beta router. Note the built-in cost estimate for `openrouter/auto` is a conservative guess, not a billable rate.
+> **OpenRouter Auto status:** the legacy Auto router (`openrouter/auto`, NotDiamond-based) is **deprecated upstream**; OpenRouter's docs point at Auto Beta (`openrouter/auto-beta`). This project deliberately keeps using the legacy slug and does **not** silently switch to beta. Its selected model and billed cost are dynamic: a static price for the alias is **unknown**, not free.
 
 ## Fast-tier provider (built-in, no local server)
 
@@ -32,7 +32,7 @@ The deployed Vercel project has `FAST_TIER_PROVIDER=openrouter` set in Productio
 
 ### Tier profiles: `quality` (default) vs `budget`
 
-Set `TIER_PROFILE=budget` to route every gateway tier to cheap/free models hosted on the gateway (`amazon/nova-micro`, `alibaba/qwen3.7-flash`, `alibaba/qwen3-coder-30b-a3b`, free fallbacks). All budget IDs were verified live against the gateway catalog. Price figures quoted in `src/router.ts` / `src/cost-estimator.ts` were captured 2026-09 and **go stale** — re-check before trusting any dollar figure. See [Cost estimates are estimates](#cost-estimates-are-estimates).
+Set `TIER_PROFILE=budget` to route every gateway tier to cheap/free models hosted on the gateway (`amazon/nova-micro`, `alibaba/qwen3.7-flash`, `alibaba/qwen3-coder-30b-a3b`, free fallbacks). All budget IDs were verified live against the gateway catalog. Price figures quoted in `src/router.ts` / `src/cost-estimator.ts` were captured 2026-09 and **go stale** — re-check before trusting any dollar figure. See [Generation baseline and cost provenance](#generation-baseline-and-cost-provenance).
 
 ```bash
 TIER_PROFILE=budget FAST_TIER_PROVIDER=gateway npm run demo
@@ -136,18 +136,17 @@ npx tsx eval/shadow-compare.ts --holdout
 
 Live runs load credentials from `~/.hermes/.env` (or the ambient environment) and never print them; result rows carry no prompt text and nothing is written to disk.
 
-## Cost estimates are estimates
+## Generation baseline and cost provenance
 
-`src/cost-estimator.ts` uses a **hardcoded price table dated 2026-09**. Prices drift; verify against the gateway docs before relying on any figure. Two honesty rules when reading its output:
+`routedGenerate()` now records a metadata-only Phase-0 generation observation: random request ID, policy descriptor, classifier requested/effective/fallback, selected route versus provider-reported served model/provider, gateway fallback attempts, usage, wall-clock latency, and cost provenance. It emits one console line by default; callers can inject a telemetry sink for structured records. Prompts, images, answers, credentials, headers and provider error messages are **not** included in these records. The public classification endpoint does not generate or emit generation telemetry.
 
-1. **An unknown model's estimated cost is `0` — that is "unknown", not free.** `estimateCost()` returns `estimatedUSD: 0` for any model missing from the table and `formatCost()` renders it as `(free)`. Do not read a `$0` as zero spend.
-2. `openrouter/auto`'s entry is a conservative guess, not OpenRouter's actual blended rate.
+`src/cost-estimator.ts` holds a **dated 2026-09 static price table**. Known rates are *estimates*, not billed costs. Missing prices, local-compute overhead and dynamic `openrouter/auto` pricing return `estimatedUSD: null` / `status: 'unknown'`; only a published free-tier rate can yield a known static zero. The `GenerateOutput.cost` field remains a static estimate/unknown. The telemetry record may report an **in-band provider-reported inference cost** (Gateway metadata or OpenRouter usage) separately as `kind: 'actual'`. It is not a complete bill across all extra charges; REST generation-cost lookup is still deferred. If metadata is missing, served identity and billable cost stay unknown—never substitute an SDK-generated ID or price a known fallback as the selected model.
 
 `src/credits.ts` checks both providers' balances and **warns** (never caps or downgrades; quality-first) via `CREDIT_WARN_THRESHOLD_USD` / `CREDIT_CRITICAL_THRESHOLD_USD`.
 
 ## HTTP API (Vercel)
 
-`api/classify.ts` is a Vercel Function that returns the routing decision for a prompt. It is **regex-only classification — no model call, no generation** — so classification itself incurs no model fee. It lacks app-owned authentication, request-size limits and method allowlisting; Vercel Deployment Protection may gate access, but do **not** assume it is safe to expose. Live generation is intentionally not exposed publicly.
+`api/classify.ts` is a Vercel Function that returns the routing decision for a prompt. It is **regex-only classification — no model call, no generation** — so classification itself incurs no model fee. GET and POST are accepted; invalid tiers/providers and unvalidated `images` are rejected, and prompts over 10,000 characters receive 413. It still lacks app-owned authentication and rate limiting; Vercel Deployment Protection may gate access, but do **not** assume it is safe to expose. Live generation is intentionally not exposed publicly.
 
 ```bash
 curl -s https://<your-deployment>/api/classify \
