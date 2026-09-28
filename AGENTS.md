@@ -15,7 +15,7 @@ Route requests to a tier (fast / reasoning / vision / coding), then to a per-tie
 | **Deployment** | Vercel project exists; `FAST_TIER_PROVIDER=openrouter` is set in Production, Preview, and Development (value encrypted in dashboard). **No deployed behavior — including fast-tier generation — has been tested live.** `api/classify.ts` is regex-only classification with no generation. |
 | **Fast Tier** | Built-in default `openrouter`. Legacy OpenRouter Auto (`openrouter/auto`) is **deprecated upstream** (Auto Beta `openrouter/auto-beta` exists) — this project keeps the stable legacy slug and does not silently switch to beta. |
 | **Holdout** | **Sealed.** 40 pilot holdout cases have provisional labels only; no predictions, no human adjudication. |
-| **Docs honesty** | Price tables are hardcoded (2026-09) and go stale; unknown model ⇒ estimated $0 rendered as "(free)" — unknown cost is not free. |
+| **Cost provenance** | Price table estimates are dated 2026-09; unknown/dynamic/local cost is `null` (never free). In-band provider inference cost is a separate telemetry field, not a complete bill. |
 
 ---
 
@@ -42,10 +42,10 @@ Precedence: per-call `fastProvider` → `setFastTierProvider()` → `FAST_TIER_P
 - **Confidence is not calibrated.** Jev's confidence/`probabilities` are raw model output; selective-accuracy and calibration tables are computed but unvalidated. Do not quote them as probabilities.
 - **Routing agreement only.** None of these numbers measures response quality of the routed model. The holdout was never touched and stays sealed until an adjudicated artifact exists (`eval/holdout-adjudicated.json` with `{ adjudicated: true, labels }`).
 
-### 5. Cost estimation honesty
-- `src/cost-estimator.ts` prices are **hardcoded, dated 2026-09** — they go stale; re-verify against gateway docs.
-- A model missing from the table estimates `$0`, and `formatCost()` renders it `(free)`. **Unknown cost is not free.**
-- `openrouter/auto`'s price entry is a conservative guess, not OpenRouter's actual rate.
+### 5. Generation baseline and cost provenance
+- `src/cost-estimator.ts` uses **dated 2026-09** static price estimates, not billed amounts. Unknown models, dynamic `openrouter/auto` and local compute overhead yield `estimatedUSD: null` / `status: 'unknown'`; only published free-tier rates have known static zero.
+- `src/generation-telemetry.ts` records privacy-safe request/policy ID, requested/effective classifier, selected vs provider-reported served model, gateway fallback attempts, usage, latency and in-band provider-reported inference cost where available. Its `actual` kind is an inference cost, not a full bill; REST generation lookup is deferred.
+- `routedGenerate()` keeps its existing result fields; `cost` remains a static estimate or unknown. It emits a metadata-only console line by default and accepts an injected sink; generation outcomes/answer quality remain unmeasured.
 - `src/credits.ts` warns on low balances; never caps or downgrades. Quality trumps cost.
 
 ### 6. Spend data is limited
@@ -101,7 +101,8 @@ Returns: { tier, provider, model } | 400
 | `src/semantic-classifier.ts` | Embeddings classifier (`CLASSIFIER`, `EMBED_MODEL`). |
 | `src/jev-classifier.ts` | Off-by-default Jev shadow adapter: transports, pinned model, budgets, typed result, error kinds. |
 | `src/credits.ts` | Credit balance checks + low-balance warnings (never caps). |
-| `src/cost-estimator.ts` | Hardcoded-price cost estimates. Unknown model ⇒ $0 (**not** free); prices dated 2026-09. |
+| `src/cost-estimator.ts` | Dated static estimates; unknown model/dynamic alias/local overhead ⇒ `estimatedUSD: null`, never "free". |
+| `src/generation-telemetry.ts` | Metadata-only generation records: selected/served route, retries, in-band inference cost, usage and latency; never payload text. |
 | `api/classify.ts` | Vercel Function. Pure regex classification endpoint; no generation. |
 | `eval/dataset.ts` | Earlier tuned 30-case labeled set (in-sample; not a holdout). |
 | `eval/pilot-dataset.ts` | 100 provisional cases: 60 validation / 40 holdout (sealed, no adjudication). |
@@ -169,7 +170,7 @@ npm run e2e        # live generation across tiers (needs keys)
 1. **Adjudicate the pilot.** All 100 pilot labels are provisional. Adjudicate the 40 holdout cases first (human review → `eval/holdout-adjudicated.json` with `adjudicated: true` + labels), then and only then run `npx tsx eval/shadow-compare.ts --live --holdout`.
 2. **Calibrate Jev confidence.** Jev's confidence/distribution is unvalidated; a calibrated gate (selective accuracy/coverage) is the next measurement step.
 3. **Response quality is unmeasured.** Routing-agreement numbers say nothing about the routed models' outputs; static tier policy is unproven.
-4. **Prices drift.** `src/cost-estimator.ts` table (2026-09) is stale-prone; unknown models estimate $0 and render "(free)" — treat as unknown, not free.
+4. **Prices drift.** `src/cost-estimator.ts` table (2026-09) is stale-prone; unknown/dynamic/local costs return `null`. Reconcile model, provider and billable inference cost with generation lookup and compare against the in-band record.
 
 ### Other
 - Reasoning tier cost: `claude-opus-4.8` is top-of-market; consider downtiering + opt-in escalation once tier policy is measured.
